@@ -50,10 +50,10 @@ def db_connection():
     conn = None
     try:
         conn = psycopg2.connect(
-            host=os.environ.get("DB_HOST", "aws-1-eu-central-1.pooler.supabase.com"),
+            host=os.environ.get("DB_HOST", "aws-1-eu-north-1.pooler.supabase.com"),
             port=os.environ.get("DB_PORT", "5432"),
             dbname=os.environ.get("DB_NAME", "postgres"),
-            user=os.environ.get("DB_USER", "postgres.cqdryfzqgsivqfoxdpkb"),
+            user=os.environ.get("DB_USER", "postgres.pejxvbrrpmqunrulqfdm"),
             password=os.environ.get("DB_PASSWORD", "4249@Kakman")
         )
         yield conn
