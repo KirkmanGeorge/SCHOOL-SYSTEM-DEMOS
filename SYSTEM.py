@@ -51,10 +51,13 @@ def db_connection():
     try:
         conn = psycopg2.connect(
             host=os.environ.get("DB_HOST", "aws-1-eu-north-1.pooler.supabase.com"),
-            port=os.environ.get("DB_PORT", "5432"),
+            port=os.environ.get("DB_PORT", "6543"),
             dbname=os.environ.get("DB_NAME", "postgres"),
             user=os.environ.get("DB_USER", "postgres.pejxvbrrpmqunrulqfdm"),
-            password=os.environ.get("DB_PASSWORD", "4249@Kakman")
+            password=os.environ.get("DB_PASSWORD", "4249@Kakman"),
+            sslmode="require",
+            connect_timeout=15,
+            options="-c statement_timeout=30000 -c search_path=public"
         )
         yield conn
     finally:
@@ -150,14 +153,34 @@ def table_has_column(conn, table_name, column_name):
         return cur.fetchone() is not None
 
 def safe_alter_add_column(conn, table, column_def):
+    import re as _re
     col_name = column_def.split()[0]
     try:
         if not table_has_column(conn, table, col_name):
+            has_unique = "UNIQUE" in column_def.upper()
+            col_def_clean = _re.sub(r'(?i)\bUNIQUE\b', '', column_def).strip()
             with conn.cursor() as cur:
-                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_def_clean}")
             conn.commit()
+            if has_unique:
+                constraint_name = f"uq_{table}_{col_name}"
+                try:
+                    with conn.cursor() as cur2:
+                        cur2.execute(
+                            f"ALTER TABLE {table} ADD CONSTRAINT {constraint_name} UNIQUE ({col_name})"
+                        )
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
             return True
     except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return False
     return False
 
@@ -360,19 +383,57 @@ def initialize_database():
             ''')
             conn.commit()
 
-        # Safe migrations
+        # Safe migrations — ensures schema is up to date even if tables existed before
         safe_alter_add_column(conn, "incomes", "created_by TEXT")
         safe_alter_add_column(conn, "incomes", "received_by TEXT")
         safe_alter_add_column(conn, "incomes", "description TEXT")
         safe_alter_add_column(conn, "incomes", "category_id INTEGER")
+        safe_alter_add_column(conn, "incomes", "student_id INTEGER")
+        safe_alter_add_column(conn, "incomes", "payer TEXT")
+        safe_alter_add_column(conn, "incomes", "source TEXT")
+        safe_alter_add_column(conn, "incomes", "payment_method TEXT")
         safe_alter_add_column(conn, "incomes", "receipt_number TEXT UNIQUE")
         safe_alter_add_column(conn, "expenses", "created_by TEXT")
         safe_alter_add_column(conn, "expenses", "approved_by TEXT")
+        safe_alter_add_column(conn, "expenses", "payee TEXT")
+        safe_alter_add_column(conn, "expenses", "payment_method TEXT")
+        safe_alter_add_column(conn, "expenses", "description TEXT")
+        safe_alter_add_column(conn, "expenses", "category_id INTEGER")
         safe_alter_add_column(conn, "expenses", "voucher_number TEXT UNIQUE")
         safe_alter_add_column(conn, "students", "normalized_name TEXT")
+        safe_alter_add_column(conn, "students", "student_type TEXT")
+        safe_alter_add_column(conn, "students", "registration_fee_paid INTEGER")
         safe_alter_add_column(conn, "uniform_categories", "normalized_category TEXT")
+        safe_alter_add_column(conn, "uniform_categories", "gender TEXT")
+        safe_alter_add_column(conn, "uniform_categories", "is_shared INTEGER")
         safe_alter_add_column(conn, "invoices", "created_by TEXT")
+        safe_alter_add_column(conn, "invoices", "notes TEXT")
+        safe_alter_add_column(conn, "invoices", "paid_amount REAL")
+        safe_alter_add_column(conn, "invoices", "balance_amount REAL")
+        safe_alter_add_column(conn, "invoices", "academic_year TEXT")
+        safe_alter_add_column(conn, "invoices", "term TEXT")
         safe_alter_add_column(conn, "payments", "created_by TEXT")
+        safe_alter_add_column(conn, "payments", "notes TEXT")
+        safe_alter_add_column(conn, "payments", "reference_number TEXT")
+        safe_alter_add_column(conn, "payments", "received_by TEXT")
+        safe_alter_add_column(conn, "staff", "normalized_name TEXT")
+        safe_alter_add_column(conn, "staff_transactions", "approved_by TEXT")
+        safe_alter_add_column(conn, "staff_transactions", "created_by TEXT")
+        # Fix NULL paid_amount/balance_amount on invoices (schema drift guard)
+        with conn.cursor() as cur_fix:
+            try:
+                cur_fix.execute("""
+                    UPDATE invoices
+                    SET paid_amount = COALESCE(paid_amount, 0),
+                        balance_amount = COALESCE(balance_amount, total_amount)
+                    WHERE paid_amount IS NULL OR balance_amount IS NULL
+                """)
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
 
         # Backfill normalized fields
         with conn.cursor() as cur:
