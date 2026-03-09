@@ -54,11 +54,13 @@ def db_connection():
             port=os.environ.get("DB_PORT", "5432"),
             dbname=os.environ.get("DB_NAME", "postgres"),
             user=os.environ.get("DB_USER", "postgres.pejxvbrrpmqunrulqfdm"),
-            password=os.environ.get("DB_PASSWORD", "4249@Kakman")
+            password=os.environ.get("DB_PASSWORD", "4249@Kakman"),
+            sslmode="require",
+            options="-c search_path=public"
         )
         yield conn
     finally:
-        if conn:
+        if conn and not conn.closed:
             conn.close()
 
 # ────────────────────────────────────────────────
@@ -3088,12 +3090,16 @@ elif page == "Fee Management":
                                             invoice_number, student_id, issue_date, due_date, academic_year, term,
                                             total_amount, paid_amount, balance_amount, status, notes, created_by
                                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, 'Pending', %s, %s)
+                                        RETURNING id
                                     """, (
                                         inv_no, student_id, issue_date.isoformat(), due_date.isoformat(),
                                         fee_row['academic_year'], fee_row['term'], total_amount, total_amount,
                                         notes, st.session_state.user['username']
                                     ))
-                                conn.commit()
+                                    new_row = cur.fetchone()
+                                    if not new_row:
+                                        raise Exception("Invoice was not saved — no row returned from database.")
+                                    conn.commit()
                         st.success(f"Invoice {inv_no} created successfully for USh {total_amount:,.0f}")
                         log_action(
                             "create_invoice",
