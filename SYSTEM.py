@@ -167,33 +167,28 @@ def safe_alter_add_column(conn, table, column_def):
 # Initialize DB and seed
 # ────────────────────────────────────────────────
 def initialize_database():
-    with db_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
+    # Each CREATE TABLE runs in its own transaction so a race condition
+    # between Streamlit workers (both trying to create the same table
+    # simultaneously) never kills the whole startup sequence.
+    ddl_statements = [
+        '''CREATE TABLE IF NOT EXISTS users (
                     id SERIAL PRIMARY KEY,
                     username TEXT UNIQUE,
                     password_hash TEXT,
                     role TEXT DEFAULT 'Clerk',
                     full_name TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS expense_categories (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS expense_categories (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE,
                     category_type TEXT DEFAULT 'Expense' CHECK(category_type IN ('Expense','Income'))
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS classes (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS classes (
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS students (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS students (
                     id SERIAL PRIMARY KEY,
                     name TEXT,
                     normalized_name TEXT,
@@ -204,29 +199,23 @@ def initialize_database():
                     registration_fee_paid INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(class_id) REFERENCES classes(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS uniform_categories (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS uniform_categories (
                     id SERIAL PRIMARY KEY,
                     category TEXT UNIQUE,
                     normalized_category TEXT,
                     gender TEXT,
                     is_shared INTEGER DEFAULT 0
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS uniforms (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS uniforms (
                     id SERIAL PRIMARY KEY,
                     category_id INTEGER UNIQUE,
                     stock INTEGER DEFAULT 0,
                     unit_price REAL DEFAULT 0.0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(category_id) REFERENCES uniform_categories(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS expenses (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS expenses (
                     id SERIAL PRIMARY KEY,
                     date DATE,
                     voucher_number TEXT UNIQUE,
@@ -240,10 +229,8 @@ def initialize_database():
                     created_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(category_id) REFERENCES expense_categories(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS incomes (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS incomes (
                     id SERIAL PRIMARY KEY,
                     date DATE,
                     receipt_number TEXT UNIQUE,
@@ -260,10 +247,8 @@ def initialize_database():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(student_id) REFERENCES students(id),
                     FOREIGN KEY(category_id) REFERENCES expense_categories(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS fee_structure (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS fee_structure (
                     id SERIAL PRIMARY KEY,
                     class_id INTEGER,
                     term TEXT CHECK(term IN ('Term 1','Term 2','Term 3')),
@@ -277,10 +262,8 @@ def initialize_database():
                     total_fee REAL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(class_id) REFERENCES classes(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS invoices (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS invoices (
                     id SERIAL PRIMARY KEY,
                     invoice_number TEXT UNIQUE,
                     student_id INTEGER,
@@ -296,10 +279,8 @@ def initialize_database():
                     created_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(student_id) REFERENCES students(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS payments (
                     id SERIAL PRIMARY KEY,
                     invoice_id INTEGER,
                     receipt_number TEXT UNIQUE,
@@ -312,29 +293,23 @@ def initialize_database():
                     created_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(invoice_id) REFERENCES invoices(id)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS audit_log (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS audit_log (
                     id SERIAL PRIMARY KEY,
                     action TEXT,
                     details TEXT,
                     performed_by TEXT,
                     performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS terms (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS terms (
                     id SERIAL PRIMARY KEY,
                     academic_year TEXT,
                     term TEXT CHECK(term IN ('Term 1','Term 2','Term 3')),
                     start_date DATE,
                     end_date DATE,
                     UNIQUE(academic_year, term)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS staff (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS staff (
                     id SERIAL PRIMARY KEY,
                     name TEXT,
                     normalized_name TEXT,
@@ -342,10 +317,8 @@ def initialize_database():
                     position TEXT,
                     hire_date DATE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS staff_transactions (
+                )''',
+        '''CREATE TABLE IF NOT EXISTS staff_transactions (
                     id SERIAL PRIMARY KEY,
                     staff_id INTEGER,
                     date DATE,
@@ -358,9 +331,17 @@ def initialize_database():
                     created_by TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(staff_id) REFERENCES staff(id)
-                )
-            ''')
-            conn.commit()
+                )''',
+    ]
+
+    with db_connection() as conn:
+        for ddl in ddl_statements:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(ddl)
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
         # Safe migrations
         safe_alter_add_column(conn, "incomes", "created_by TEXT")
@@ -487,15 +468,16 @@ def initialize_database():
             ('Uniform Sales', 'Income'), ('Donations', 'Income'), ('Other Income', 'Income'),
             ('Transfer In', 'Income'), ('Transfer Out', 'Expense')
         ]
-        with conn.cursor() as cur:
+        for cat, cat_type in expense_seeds:
             try:
-                for cat, cat_type in expense_seeds:
-                    cur.execute("SELECT id FROM expense_categories WHERE name = %s", (cat,))
-                    if not cur.fetchone():
-                        cur.execute("INSERT INTO expense_categories (name, category_type) VALUES (%s, %s)", (cat, cat_type))
-                        conn.commit()
-            except:
-                pass
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO expense_categories (name, category_type) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                        (cat, cat_type)
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 initialize_database()
 # ────────────────────────────────────────────────
